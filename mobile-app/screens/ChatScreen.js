@@ -22,7 +22,7 @@ import * as Speech from "expo-speech";
 import { sendChatMessage, getChatHistory } from "../api/api";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-const SIDEBAR_WIDTH = SCREEN_WIDTH * 0.75; // Sidebar covers 75% of screen width
+const SIDEBAR_WIDTH = SCREEN_WIDTH * 0.35; // Sidebar covers 75% of screen width
 
 export default function ChatScreen({ route }) {
   const navigation = useNavigation();
