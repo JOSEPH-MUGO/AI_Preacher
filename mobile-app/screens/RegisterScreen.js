@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -6,25 +6,25 @@ import {
   TouchableOpacity,
   StyleSheet,
   KeyboardAvoidingView,
-  Platform
-} from 'react-native';
-import { Picker } from '@react-native-picker/picker';
-import { getDenominations, registerUser } from '../api/api';
+  Platform,
+} from "react-native";
+import { Picker } from "@react-native-picker/picker";
+import { getDenominations, registerUser } from "../api/api";
 
 export default function RegisterScreen({ navigation }) {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [mood, setMood] = useState('');
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [mood, setMood] = useState("");
   const [denominations, setDenominations] = useState([]);
-  const [selectedDenomination, setSelectedDenomination] = useState('');
-  const [error, setError] = useState('');
+  const [selectedDenomination, setSelectedDenomination] = useState("");
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    getDenominations().then(res => setDenominations(res.data));
+    getDenominations().then((res) => setDenominations(res.data));
   }, []);
 
   const handleRegister = async () => {
-    setError('');
+    setError("");
     try {
       const response = await registerUser({
         name,
@@ -32,25 +32,32 @@ export default function RegisterScreen({ navigation }) {
         mood,
         denomination_id: selectedDenomination,
       });
-      const user = response.data; 
-      navigation.navigate('Chat', { userId: user.id, name: user.name });
+      const user = response.data;
+      navigation.navigate("Chat", { userId: user.id, name: user.name });
     } catch (err) {
-      if (err.response?.data?.error === 'Email already exists with another user.') {
-        setError('Email already exists with another user.');
+      if (
+        err.response?.data?.error === "Email already exists with another user."
+      ) {
+        setError("Email already exists with another user.");
       } else {
-        setError('Something went wrong. Please try again.');
+        setError("Something went wrong. Please try again.");
       }
     }
   };
+  const emailIsValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const isFormValid =
+    name.trim().length > 0 &&
+    emailIsValid &&
+    selectedDenomination !== "";
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
       style={styles.container}
     >
-      <Text style={styles.title}>AI Preacher</Text>
+      <Text style={styles.title}>AI-Powered Preacher</Text>
       <Text style={styles.subtitle}>
-        Get personalized comfort and gospel insights based on your mood
+        Get personalized comfort and gospel insights
       </Text>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -60,6 +67,7 @@ export default function RegisterScreen({ navigation }) {
         placeholder="Name"
         placeholderTextColor="#999"
         value={name}
+      
         onChangeText={setName}
       />
       <TextInput
@@ -86,7 +94,7 @@ export default function RegisterScreen({ navigation }) {
           style={styles.picker}
         >
           <Picker.Item label="Select Your Denomination" value="" />
-          {denominations.map(d => (
+          {denominations.map((d) => (
             <Picker.Item key={d.id} label={d.name} value={d.id} />
           ))}
         </Picker>
@@ -95,10 +103,10 @@ export default function RegisterScreen({ navigation }) {
       <TouchableOpacity
         style={[
           styles.button,
-          { backgroundColor: selectedDenomination ? '#2e86de' : '#ccc' },
+          { backgroundColor: isFormValid? "#2e86de" : "#ccc" },
         ]}
         onPress={handleRegister}
-        disabled={!selectedDenomination}
+        disabled={!isFormValid}
       >
         <Text style={styles.buttonText}>Start Chat</Text>
       </TouchableOpacity>
@@ -110,39 +118,39 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 24,
-    justifyContent: 'center',
-    backgroundColor: '#f4f6fc',
+    justifyContent: "center",
+    backgroundColor: "#f4f6fc",
   },
   title: {
     fontSize: 26,
-    fontWeight: '700',
-    textAlign: 'center',
-    color: '#2e86de',
+    fontWeight: "700",
+    textAlign: "center",
+    color: "#2e86de",
     marginBottom: 8,
   },
   subtitle: {
     fontSize: 14,
-    textAlign: 'center',
-    color: '#555',
+    textAlign: "center",
+    color: "#555",
     marginBottom: 20,
   },
   input: {
     height: 48,
-    borderColor: '#ddd',
+    borderColor: "#ddd",
     borderWidth: 1,
     borderRadius: 8,
     paddingHorizontal: 14,
     fontSize: 16,
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     marginBottom: 14,
   },
   pickerWrapper: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: "#ddd",
     borderRadius: 8,
     marginBottom: 20,
-    backgroundColor: '#fff',
-    overflow: 'hidden',
+    backgroundColor: "#fff",
+    overflow: "hidden",
   },
   picker: {
     height: 48,
@@ -150,18 +158,18 @@ const styles = StyleSheet.create({
   button: {
     height: 48,
     borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     marginTop: 10,
   },
   buttonText: {
-    color: '#fff',
+    color: "#fff",
     fontSize: 17,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   error: {
-    color: '#d63031',
-    textAlign: 'center',
+    color: "#d63031",
+    textAlign: "center",
     marginBottom: 10,
     fontSize: 14,
   },

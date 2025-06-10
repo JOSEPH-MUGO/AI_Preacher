@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const MODEL_NAME = 'models/gemini-2.0-flash';  // Or use gemini-1.5-pro
+const MODEL_NAME = 'models/gemini-2.0-flash';  
 const BASE_URL   = 'https://generativelanguage.googleapis.com/v1';
 const ENDPOINT   = `${BASE_URL}/${MODEL_NAME}:generateContent`;
 
