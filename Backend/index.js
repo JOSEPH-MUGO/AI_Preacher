@@ -8,8 +8,6 @@ app.use(cors());
 app.use(bodyParser.json());
 
 
-
-
 const userRoutes = require('./routes/users');
 app.use('/api/users', userRoutes);
 
@@ -29,6 +27,9 @@ const scriptureRoute = require('./routes/scripture');
 app.use('/api/scripture', scriptureRoute);
 
 app.get('/', (req, res) => res.send('AI Preacher API is running'));
+
+const chatSessionsRouter = require("./routes/chatSessions");
+app.use("/api/chat_sessions", chatSessionsRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`));

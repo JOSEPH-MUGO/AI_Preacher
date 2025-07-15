@@ -1,9 +1,10 @@
 // mobile-app/screens/ChatScreen.js
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Animated,
-  Dimensions,
+  Alert,
+  ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -15,470 +16,679 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
-import Voice from "@react-native-voice/voice"; // STT
+import Voice from "@react-native-voice/voice";
 import * as Speech from "expo-speech";
-import { sendChatMessage, getChatHistory } from "../api/api";
+import * as Clipboard from "expo-clipboard";
+import {
+  createChatSession,
+  getChatSessions,
+  sendChatMessage,
+  getChatHistory,
+} from "../api/api";
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-const SIDEBAR_WIDTH = SCREEN_WIDTH * 0.35; // Sidebar covers 75% of screen width
+const SIDEBAR_WIDTH_MOBILE_FRACTION = 0.4; 
+const WEB_BREAKPOINT = 768; 
 
 export default function ChatScreen({ route }) {
   const navigation = useNavigation();
   const { userId, name } = route.params;
+  const { width } = useWindowDimensions();
+  const isWeb = Platform.OS === "web";
+  const isWide = isWeb && width >= WEB_BREAKPOINT;
 
-  // Main chat state
-  const [messages, setMessages] = useState([]);
+  //
+  // Chat area state
+  //
+  const [messages, setMessages] = useState([]); 
   const [inputText, setInputText] = useState("");
+  const [inputHeight, setInputHeight] = useState(40);
   const [isTyping, setIsTyping] = useState(false);
 
-  // Full history (flattened) + grouped by date
-  const [allHistory, setAllHistory] = useState([]);
-  const [groupedHistory, setGroupedHistory] = useState([]);
+  //
+  // Sessions list state (sidebar)
+  //
+  const [sessionsList, setSessionsList] = useState([]); 
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Sidebar state & animation
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const sidebarAnim = useRef(new Animated.Value(SIDEBAR_WIDTH)).current;
+  //
+  // Sidebar state
+  //
+  const [sidebarOpen, setSidebarOpen] = useState(false); 
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false); 
+  const sidebarAnim = useRef(new Animated.Value(0)).current;
 
-  // Refs
-  const flatListRef = useRef();
+  //
+  // Voice recognition
+  //
   const [isListening, setIsListening] = useState(false);
   const [spokenText, setSpokenText] = useState("");
 
-  // On mount: fetch history and set header button
-  useEffect(() => {
-    // Attach the handlers
-    Voice.onSpeechResults = onSpeechResults;
-    Voice.onSpeechError = onSpeechError;
+  //
+  // Active session
+  //
+  const [activeSessionId, setActiveSessionId] = useState(null);
 
-    // Cleanup on unmount
-    return () => {
-      Voice.destroy().then(Voice.removeAllListeners);
-    };
+  const flatListRef = useRef();
+  const typingTimeoutRef = useRef();
+
+  //
+  // TextInput auto-height
+  //
+  const handleContentSizeChange = useCallback((event) => {
+    const contentHeight = event.nativeEvent.contentSize.height;
+    const newHeight = Math.max(40, Math.min(120, contentHeight));
+    setInputHeight(newHeight);
   }, []);
 
-  async function startListening() {
+  //
+  // Clipboard copy for long-press
+  //
+  const copyToClipboard = useCallback(async (text) => {
+    try {
+      await Clipboard.setStringAsync(text);
+      Alert.alert("Copied!", "Message copied to clipboard");
+    } catch (error) {
+      console.error("Copy failed:", error);
+      Alert.alert("Error", "Failed to copy message");
+    }
+  }, []);
+  const handleLongPress = useCallback(
+    (text) => {
+      Alert.alert("Copy Message", "Do you want to copy this message?", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Copy", onPress: () => copyToClipboard(text) },
+      ]);
+    },
+    [copyToClipboard]
+  );
+
+  //
+  // Voice handlers
+  //
+  const onSpeechResults = useCallback((event) => {
+    if (event.value && event.value.length) {
+      setSpokenText(event.value[0]);
+    }
+  }, []);
+  const onSpeechError = useCallback((err) => {
+    console.error("STT error:", err);
+    setIsListening(false);
+  }, []);
+  const startListening = useCallback(async () => {
     try {
       setIsListening(true);
       setSpokenText("");
-      // 'en-US' for English; or switch to 'sw-KE' for Swahili STT if desired
       await Voice.start("en-US");
     } catch (e) {
       console.error("Voice.start error:", e);
       setIsListening(false);
     }
-  }
-
-  async function stopListening() {
+  }, []);
+  const stopListening = useCallback(async () => {
     try {
       await Voice.stop();
       setIsListening(false);
       if (spokenText.trim()) {
-        // feed the recognized text into your existing send flow
         setInputText(spokenText);
-        handleSend();
       }
     } catch (e) {
       console.error("Voice.stop error:", e);
       setIsListening(false);
     }
-  }
+  }, [spokenText]);
 
   useEffect(() => {
-    navigation.setOptions({
-      title: "Chat with AI Preacher",
-      headerRight: () => (
-        <TouchableOpacity onPress={toggleSidebar} style={{ marginRight: 12 }}>
-          <Text style={{ fontSize: 24, color: "#2e86de" }}>
-            {sidebarOpen ? "✕" : "☰"}
-          </Text>
-        </TouchableOpacity>
-      ),
-    });
-
-    const welcomeBubble = {
-      id: "welcome",
-      type: "ai",
-      text: `Welcome ${name}, you’re in the right place. How can I help you today?`,
-      created_at: new Date().toISOString(),
+    Voice.onSpeechResults = onSpeechResults;
+    Voice.onSpeechError = onSpeechError;
+    return () => {
+      Voice.destroy().then(Voice.removeAllListeners);
+      Speech.stop();
     };
+  }, [onSpeechResults, onSpeechError]);
 
-    fetchHistory(welcomeBubble);
+  //
+  // Navigation header: only on mobile/narrow shows toggle button
+  //
+  useEffect(() => {
+    if (!isWide) {
+      navigation.setOptions({
+        title: "Chat with AI Preacher",
+        headerRight: () => (
+          <TouchableOpacity onPress={toggleSidebar} style={{ marginRight: 12 }}>
+            <Text style={{ fontSize: 24, color: "#2e86de" }}>
+              {sidebarOpen ? "✕" : "☰"}
+            </Text>
+          </TouchableOpacity>
+        ),
+      });
+    } else {
+      navigation.setOptions({
+        title: "Chat with AI Preacher",
+        headerRight: () => null,
+      });
+      // ensure sidebar overlay closed
+      setSidebarOpen(false);
+    }
+  }, [isWide, sidebarOpen]);
+
+  // Auto-scroll when messages or typing changes
+  
+  useEffect(() => {
+    if (flatListRef.current && (messages.length > 0 || isTyping)) {
+      setTimeout(() => {
+        flatListRef.current.scrollToEnd({ animated: true });
+      }, 100);
+    }
+  }, [messages, isTyping]);
+
+
+  useEffect(() => {
+    (async () => {
+      // 1) Load existing sessions
+      const sessions = await loadSessionsList();
+      if (sessions.length > 0) {
+        // Auto-select the most recent session
+        selectSession(sessions[0].session_id,  true);
+      } else {
+        await initializeNewChat();
+      }
+    })();
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
   }, []);
 
-  // Update header icon when sidebar toggles
-  useEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <TouchableOpacity onPress={toggleSidebar} style={{ marginRight: 12 }}>
-          <Text style={{ fontSize: 24, color: "#2e86de" }}>
-            {sidebarOpen ? "✕" : "☰"}
-          </Text>
-        </TouchableOpacity>
-      ),
-    });
-  }, [sidebarOpen]);
-
-  function onSpeechResults(event) {
-    if (event.value && event.value.length) {
-      setSpokenText(event.value[0]);
+  //
+  // Load sessions list from backend; returns array
+  //
+  const loadSessionsList = useCallback(async () => {
+    setLoadingSessions(true);
+    try {
+      const res = await getChatSessions(userId);
+      let arr = Array.isArray(res.data) ? res.data.slice() : [];
+      // Sort descending by updated_at
+      arr.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+      setSessionsList(arr);
+      return arr;
+    } catch (err) {
+      console.error("Failed to load sessions list:", err);
+      setSessionsList([]);
+      return [];
+    } finally {
+      setLoadingSessions(false);
     }
-  }
+  }, [userId]);
 
-  // Called if STT engine errors out
-  function onSpeechError(err) {
-    console.error("STT error:", err);
-    setIsListening(false);
-  }
+  //
+  // Initialize a new chat session by calling backend createChatSession
+  //
+  const initializeNewChat = useCallback(async () => {
+    try {
+      const res = await createChatSession(userId);
+      const session = res.data;
+    
+      const sessionId = session.session_id;
+      setActiveSessionId(sessionId);
+      setInputText("");
+      setInputHeight(40);
+      setIsTyping(false);
 
-  function fetchHistory(welcomeBubble) {
-    getChatHistory(userId)
-      .then((res) => {
-        // Flatten each chat_history row into user/ai messages
-        const flat = [];
-        res.data.forEach((entry) => {
-          if (entry.user_message) {
-            flat.push({
-              id: `u-${entry.id}`,
-              type: "user",
-              text: entry.user_message,
-              created_at: entry.created_at,
-            });
-          }
-          if (entry.ai_response) {
-            flat.push({
-              id: `a-${entry.id}`,
-              type: "ai",
-              text: entry.ai_response,
-              created_at: entry.created_at,
-            });
-          }
-        });
-        setAllHistory(flat);
+      // Welcome bubble
+      const welcomeBubble = {
+        id: `welcome-${sessionId}`,
+        type: "ai",
+        text: `Welcome ${name}, you’re in the right place. How can I help you today?`,
+        created_at: new Date().toISOString(),
+        sessionId,
+      };
+      setMessages([welcomeBubble]);
 
-        // Group messages by date (Today / Yesterday / Older)
-        const grouped = groupByDate(flat);
-        setGroupedHistory(grouped);
+      // Prepend new session in sidebar
+      setSessionsList((prev) => [
+        { 
+          session_id: sessionId, 
+          title: session.title || "(New Chat)", 
+          created_at: session.created_at, 
+          updated_at: session.updated_at 
+        },
+        ...prev,
+      ]);
+    } catch (err) {
+      console.error("Failed to create new chat session:", err);
+      // Fallback: client-generated sessionId
+      const sessionId = `session-${Date.now()}`;
+      setActiveSessionId(sessionId);
+      setInputText("");
+      setInputHeight(40);
+      setIsTyping(false);
+      const welcomeBubble = {
+        id: `welcome-${sessionId}`,
+        type: "ai",
+        text: `Welcome ${name}, you’re in the right place. How can I help you today?`,
+        created_at: new Date().toISOString(),
+        sessionId,
+      };
+      setMessages([welcomeBubble]);
+      setSessionsList((prev) => [
+        {
+          session_id: sessionId,
+          title: "(New Chat)",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        ...prev,
+      ]);
+    }
+  }, [userId, name]);
 
-        // Show only Today's messages in the main view (plus the welcome bubble)
-        const todayKey = new Date().toDateString();
-        const todayMsgs = flat.filter(
-          (msg) => new Date(msg.created_at).toDateString() === todayKey
-        );
-        setMessages([welcomeBubble, ...todayMsgs]);
-      })
-      .catch((err) => {
-        console.error("History fetch failed:", err);
-        setMessages([{ ...welcomeBubble }]);
+  //
+  // Fetch full history for selected session
+  //
+  const fetchHistoryForSidebar = useCallback(async (sessionIdParam) => {
+    const sessionIdToUse = sessionIdParam || activeSessionId;
+    if (!sessionIdToUse) return;
+    setLoadingHistory(true);
+    try {
+      const res = await getChatHistory(userId, sessionIdToUse);
+      const flat = [];
+      res.data.forEach((entry) => {
+        if (entry.user_message) {
+          flat.push({
+            id: `u-${entry.id}-${sessionIdToUse}`,
+            type: "user",
+            text: entry.user_message,
+            created_at: entry.created_at,
+            sessionId: entry.session_id || sessionIdToUse,
+          });
+        }
+        if (entry.ai_response) {
+          flat.push({
+            id: `a-${entry.id}-${sessionIdToUse}`,
+            type: "ai",
+            text: entry.ai_response,
+            created_at: entry.created_at,
+            sessionId: entry.session_id || sessionIdToUse,
+          });
+        }
       });
-  }
+      flat.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      setMessages(flat);
 
-  // Toggle sidebar open/close with animation
-  const toggleSidebar = () => {
-    const toValue = sidebarOpen ? SIDEBAR_WIDTH : 0;
+      // Update updated_at preview in sessionsList
+      setSessionsList((prev) =>
+        prev.map((s) =>
+          s.session_id === sessionIdToUse
+            ? { ...s, updated_at: new Date().toISOString() }
+            : s
+        )
+      );
+    } catch (err) {
+      console.error("History fetch failed:", err);
+      setMessages([]); 
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [userId, activeSessionId]);
+
+  // Sidebar toggle on mobile
+  const toggleSidebar = useCallback(() => {
+    if (isWide) return;
+    const sidebarWidth = width * SIDEBAR_WIDTH_MOBILE_FRACTION;
+    const toValue = sidebarOpen ? sidebarWidth : 0;
     Animated.timing(sidebarAnim, {
       toValue,
       duration: 250,
       useNativeDriver: true,
     }).start();
     setSidebarOpen((prev) => !prev);
-  };
-
-  // When a date group is tapped, load that day's messages
-  const loadDay = (dateKey) => {
-    const dayMsgs = allHistory.filter(
-      (msg) => new Date(msg.created_at).toDateString() === dateKey
-    );
-
-    const headerBubble = {
-      id: `header-${dateKey}`,
-      type: "ai",
-      text: `Conversation from ${formatDateGroup(dateKey)}:`,
-      created_at: new Date().toISOString(),
-    };
-
-    let newMsgs;
-    if (dayMsgs.length === 0) {
-      newMsgs = [
-        headerBubble,
-        {
-          id: `none-${dateKey}`,
-          type: "ai",
-          text: "No messages found for this date.",
-          created_at: new Date().toISOString(),
-        },
-      ];
-    } else {
-      newMsgs = [headerBubble, ...dayMsgs];
+    if (!sidebarOpen) {
+      loadSessionsList();
     }
+  }, [sidebarOpen, sidebarAnim, width, isWide, loadSessionsList]);
 
-    setMessages(newMsgs);
-    toggleSidebar();
-  };
+  // Start new chat from sidebar
+  const startNewChat = useCallback(async () => {
+    await initializeNewChat();
+    if (!isWide && sidebarOpen) {
+      toggleSidebar();
+    }
+  }, [initializeNewChat, isWide, sidebarOpen, toggleSidebar]);
 
-  // Handle sending a new message
-  const handleSend = async () => {
-    if (!inputText.trim()) return;
+  const selectSession = useCallback((session_id, fromMount = false) => {
+    setActiveSessionId(session_id);
+    fetchHistoryForSidebar(session_id);
+    if (!isWide && sidebarOpen && !fromMount) {
+      toggleSidebar();
+    }
+  }, [isWide, sidebarOpen, fetchHistoryForSidebar, toggleSidebar]);
 
-    // Immediately add the user's message
+
+  // Handle sending a message
+  const handleSend = useCallback(async () => {
+    if (!inputText.trim() || isTyping) return;
+    const generatedId = (prefix) =>
+      `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const sessionIdToUse = activeSessionId;
+    if (!sessionIdToUse) {
+      Alert.alert("Session error", "No active session. Please start a new chat.");
+      return;
+    }
+    const nowIso = new Date().toISOString();
     const userMessage = {
-      id: `u-temp-${Date.now()}`,
+      id: generatedId("u"),
       type: "user",
       text: inputText,
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
+      sessionId: sessionIdToUse,
     };
+    // Append user message
     setMessages((prev) => [...prev, userMessage]);
     setInputText("");
+    setInputHeight(40);
     setIsTyping(true);
 
+    // Update preview for sessionsList
+    setSessionsList((prev) =>
+      prev.map((s) =>
+        s.session_id === sessionIdToUse
+          ? {
+              ...s,
+              title:
+                s.title === "(New Chat)" || !s.title
+                  ? userMessage.text
+                  : s.title,
+              updated_at: nowIso,
+              first_user_message:
+                s.first_user_message === "(New Chat)"
+                  ? userMessage.text
+                  : s.first_user_message,
+            }
+          : s
+      )
+    );
+
     try {
-      const res = await sendChatMessage(userId, inputText);
+      const res = await sendChatMessage(userId, sessionIdToUse, inputText);
       const aiReply = {
-        id: `a-temp-${Date.now()}`,
+        id: generatedId("a"),
         type: "ai",
         text: res.data.reply,
         created_at: new Date().toISOString(),
+        sessionId: sessionIdToUse,
       };
-
-      // Add to all history in memory
-      const newAll = [...allHistory, userMessage, aiReply];
-      setAllHistory(newAll);
-      setGroupedHistory(groupByDate(newAll));
-
-      // Show “typing” dots briefly, then append reply
-      setTimeout(() => {
+      // Brief typing delay so user sees indicator
+      typingTimeoutRef.current = setTimeout(() => {
+        setIsTyping(false);
         setMessages((prev) => [...prev, aiReply]);
+        setSessionsList((prev) =>
+          prev.map((s) =>
+            s.session_id === sessionIdToUse
+              ? { ...s, updated_at: new Date().toISOString() }
+              : s
+          )
+        );
+        Speech.stop();
         Speech.speak(aiReply.text, {
-          language: "en-US", // or 'sw-KE' if you're in Swahili mode
+          language: "en-US",
           pitch: 1.0,
           rate: 1.0,
         });
-        setIsTyping(false);
-      }, 1500);
+      }, 800);
     } catch (err) {
       console.error("Send error:", err);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `error-${Date.now()}`,
-          type: "error",
-          text: "Something went wrong. Please try again.",
-          created_at: new Date().toISOString(),
-        },
-      ]);
       setIsTyping(false);
+      const errorMsg = {
+        id: generatedId("error"),
+        type: "error",
+        text: "Something went wrong. Please try again later.",
+        created_at: new Date().toISOString(),
+        sessionId: sessionIdToUse,
+      };
+      setMessages((prev) => [...prev, errorMsg]);
     }
+  }, [inputText, isTyping, userId, activeSessionId]);
+
+  
+  // Render each message item
+  const renderItem = useCallback(
+    ({ item }) => (
+      <Pressable onLongPress={() => handleLongPress(item.text)} delayLongPress={500}>
+        <View
+          style={[
+            styles.messageBubble,
+            item.type === "user"
+              ? styles.userBubble
+              : item.type === "ai"
+              ? styles.aiBubble
+              : styles.errorBubble,
+          ]}
+        >
+          <Text style={styles.messageText}>{item.text}</Text>
+          <Text style={styles.timestampText}>{formatTime(item.created_at)}</Text>
+        </View>
+      </Pressable>
+    ),
+    [handleLongPress]
+  );
+  const keyExtractor = useCallback((item) => item.id, []);
+
+  // FlatList performance props
+  const flatListProps = {
+    initialNumToRender: 20,
+    maxToRenderPerBatch: 20,
+    windowSize: 10,
+    removeClippedSubviews: true,
   };
+  const ListFooterComponent = isTyping ? (
+    <View style={[styles.messageBubble, styles.aiBubble, styles.typingBubble]}>
+      <TypingDots />
+    </View>
+  ) : null;
 
-  // Whenever messages change, scroll to bottom
-  useEffect(() => {
-    if (flatListRef.current && messages.length > 0) {
-      setTimeout(() => {
-        flatListRef.current.scrollToEnd({ animated: true });
-      }, 100);
-    }
-  }, [messages]);
+  // Sidebar width on mobile overlay
+  const sidebarWidthMobile = width * SIDEBAR_WIDTH_MOBILE_FRACTION;
 
+  // Main render
   return (
     <SafeAreaView style={styles.safeArea}>
-      {/* If sidebar is open, render a full‐screen backdrop that closes it */}
-      {sidebarOpen && (
-        <Pressable style={styles.backdrop} onPress={toggleSidebar} />
-      )}
-
-      {/* Main column: Chat area + Bottom input section */}
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 80}
-      >
-        {/* =============== CHAT AREA =============== */}
-        <View style={styles.chatBackground}>
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.flatListContent}
-            keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => (
-              <View
-                style={[
-                  styles.messageBubble,
-                  item.type === "user"
-                    ? styles.userBubble
-                    : item.type === "ai"
-                    ? styles.aiBubble
-                    : styles.errorBubble,
-                ]}
+      <View style={isWide ? styles.containerRow : styles.container}>
+        {/* Wide sidebar */}
+        {isWide && (
+          sidebarCollapsed ? (
+            <View style={styles.sidebarCollapsed}>
+              <TouchableOpacity
+                onPress={() => setSidebarCollapsed(false)}
+                style={styles.collapseToggle}
               >
-                <Text style={styles.messageText}>{item.text}</Text>
-                <Text style={styles.timestampText}>
-                  {formatTime(item.created_at)}
-                </Text>
+                <Text style={styles.collapseToggleText}>›</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.sidebarWide}>
+              <View style={styles.sidebarHeader}>
+                <TouchableOpacity
+                  onPress={() => setSidebarCollapsed(true)}
+                  style={styles.collapseToggle}
+                >
+                  <Text style={styles.collapseToggleText}>‹</Text>
+                </TouchableOpacity>
+                <Text style={styles.sidebarHeaderTitle}>History</Text>
               </View>
-            )}
-          />
+              <ScrollView
+                contentContainerStyle={styles.sidebarContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <TouchableOpacity style={styles.newChatButton} onPress={startNewChat}>
+                  <Text style={styles.newChatText}>📝 Start New Chat</Text>
+                </TouchableOpacity>
+                <Text style={styles.sidebarTitle}>Chat Sessions</Text>
+                {loadingSessions ? (
+                  <ActivityIndicator size="small" color="#128C7E" />
+                ) : (
+                  sessionsList.map((sess) => (
+                    <TouchableOpacity
+                      key={sess.session_id}
+                      onPress={() => selectSession(sess.session_id)}
+                      style={[
+                        styles.historyItemContainer,
+                        sess.session_id === activeSessionId && styles.historyItemActive,
+                      ]}
+                    >
+                      <Text style={styles.historyItemText}>
+                        {truncateText(sess.title || "(No preview)", 30)}
+                      </Text>
+                      <Text style={styles.historyTime}>
+                        {formatTime(sess.updated_at)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))
+                )}
+              </ScrollView>
+            </View>
+          )
+        )}
 
-          {isTyping && (
-            <View
+        {/* Chat area */}
+        <View style={styles.chatArea}>
+          {/* Overlay sidebar on mobile */}
+          {!isWide && sidebarOpen && (
+            <Pressable style={styles.backdrop} onPress={toggleSidebar} />
+          )}
+          {!isWide && sidebarOpen && (
+            <Animated.View
               style={[
-                styles.messageBubble,
-                styles.aiBubble,
-                styles.typingBubble,
+                styles.sidebarOverlay,
+                {
+                  width: sidebarWidthMobile,
+                  transform: [{ translateX: sidebarAnim }],
+                },
               ]}
             >
-              <TypingDots />
-            </View>
-          )}
-        </View>
-
-        {/* =============== BOTTOM INPUT SECTION =============== */}
-        <View style={styles.inputSection}>
-          <View style={styles.inputContainer}>
-            <TextInput
-              style={styles.input}
-              value={inputText}
-              onChangeText={setInputText}
-              placeholder="Type your message"
-              placeholderTextColor="#999"
-              returnKeyType="send"
-              onSubmitEditing={handleSend}
-              enablesReturnKeyAutomatically={true}
-            />
-            <TouchableOpacity onPress={handleSend} style={styles.sendButton}>
-              <Text style={styles.sendIcon}>➤</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={isListening ? stopListening : startListening}
-              style={[styles.micButton, isListening && styles.micButtonActive]}
-            >
-              <Text style={styles.micIcon}>{isListening ? "🎙️" : "🎤"}</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.disclaimer}>
-            <Text style={styles.disclaimerText}>
-              This is an AI-powered preacher. It is not a substitute for real
-              pastoral counseling.
-            </Text>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-
-      {/* =============== SIDEBAR =============== */}
-      <Animated.View
-        style={[styles.sidebar, { transform: [{ translateX: sidebarAnim }] }]}
-      >
-        <ScrollView
-          contentContainerStyle={styles.sidebarContent}
-          showsVerticalScrollIndicator={false}
-        >
-          <Text style={styles.sidebarTitle}>Chat History</Text>
-          {groupedHistory.map((group) => (
-            <View key={group.dateKey} style={styles.groupBlock}>
-              <Text style={styles.groupHeader}>
-                {formatDateGroup(group.dateKey)}
-              </Text>
-              {group.items.map((item) => (
-                <TouchableOpacity
-                  key={item.id}
-                  onPress={() => loadDay(group.dateKey)}
-                  style={styles.historyItemContainer}
-                >
-                  <Text style={styles.historyItemText}>
-                    {truncateText(
-                      item.type === "user"
-                        ? `You: ${item.text}`
-                        : `AI: ${item.text}`,
-                      30
-                    )}
-                  </Text>
-                  <Text style={styles.historyTime}>
-                    {formatTime(item.created_at)}
-                  </Text>
+              <ScrollView
+                contentContainerStyle={styles.sidebarContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <TouchableOpacity style={styles.newChatButton} onPress={startNewChat}>
+                  <Text style={styles.newChatText}>📝 Start New Chat</Text>
                 </TouchableOpacity>
-              ))}
+                <Text style={styles.sidebarTitle}>Chat Sessions</Text>
+                {loadingSessions ? (
+                  <ActivityIndicator size="small" color="#128C7E" />
+                ) : (
+                  sessionsList.map((sess) => (
+                    <TouchableOpacity
+                      key={sess.session_id}
+                      onPress={() => selectSession(sess.session_id)}
+                      style={[
+                        styles.historyItemContainer,
+                        sess.session_id === activeSessionId && styles.historyItemActive,
+                      ]}
+                    >
+                      <Text style={styles.historyItemText}>
+                        {truncateText(sess.title || "(No preview)", 30)}
+                      </Text>
+                      <Text style={styles.historyTime}>
+                        {formatTime(sess.updated_at)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))
+                )}
+              </ScrollView>
+            </Animated.View>
+          )}
+
+          {/* Chat messages + input */}
+          <KeyboardAvoidingView
+            style={styles.chatBackground}
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 80}
+          >
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              renderItem={renderItem}
+              keyExtractor={keyExtractor}
+              contentContainerStyle={styles.flatListContent}
+              keyboardShouldPersistTaps="handled"
+              ListFooterComponent={ListFooterComponent}
+              {...flatListProps}
+            />
+            {/* Input section */}
+            <View style={styles.inputSection}>
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.input, { height: inputHeight }]}
+                  value={inputText}
+                  onChangeText={setInputText}
+                  onContentSizeChange={handleContentSizeChange}
+                  multiline
+                  placeholder="Type your message"
+                  placeholderTextColor="#999"
+                />
+                <TouchableOpacity
+                  onPress={handleSend}
+                  disabled={!inputText.trim() || isTyping}
+                  style={[
+                    styles.sendButton,
+                    (!inputText.trim() || isTyping) && { opacity: 0.5 },
+                  ]}
+                >
+                  <Text style={styles.sendIcon}>➤</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={isListening ? stopListening : startListening}
+                  style={[styles.micButton, isListening && styles.micButtonActive]}
+                >
+                  <Text style={styles.micIcon}>{isListening ? "🎙️" : "🎤"}</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.disclaimer}>
+                <Text style={styles.disclaimerText}>
+                  This is an AI-powered preacher. It is not a substitute for real pastoral counseling.
+                </Text>
+              </View>
             </View>
-          ))}
-        </ScrollView>
-      </Animated.View>
+          </KeyboardAvoidingView>
+        </View>
+      </View>
     </SafeAreaView>
   );
 }
 
-// ——— Helpers ——————————————————————————————
+// Helpers
 
-/**
- * Group a flat array of messages by calendar date (e.g. "Mon Jun 02 2025")
- * Returns an array of { dateKey, items } sorted descending (newest date first).
- */
-function groupByDate(flatMsgs) {
-  const groups = {};
-  flatMsgs.forEach((msg) => {
-    const dateKey = new Date(msg.created_at).toDateString();
-    if (!groups[dateKey]) groups[dateKey] = [];
-    groups[dateKey].push(msg);
-  });
-  const sortedKeys = Object.keys(groups).sort(
-    (a, b) => new Date(b) - new Date(a)
-  );
-  return sortedKeys.map((key) => ({
-    dateKey: key,
-    items: groups[key],
-  }));
-}
-
-/**
- * Given a dateKey string ("Mon Jun 02 2025"), returns
- * "Today" / "Yesterday" / or "Jun 2, 2025".
- */
-function formatDateGroup(dateKey) {
-  const todayKey = new Date().toDateString();
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayKey = yesterday.toDateString();
-  if (dateKey === todayKey) return "Today";
-  if (dateKey === yesterdayKey) return "Yesterday";
-  return new Date(dateKey).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-/** Format a timestamp "…T14:23:45.000Z" as "14:23" */
 function formatTime(timestamp) {
+  if (!timestamp) return "";
   const d = new Date(timestamp);
-  const hrs = d.getHours();
-  const mins = String(d.getMinutes()).padStart(2, "0");
-  return `${hrs}:${mins}`;
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hours < 12 ? "AM" : "PM";
+  hours = hours % 12 || 12;
+  return `${hours}:${minutes} ${ampm}`;
 }
 
-/** Truncate a long string to maxLen, adding an ellipsis if needed */
 function truncateText(text, maxLen) {
+  if (!text) return "";
   return text.length > maxLen ? text.slice(0, maxLen - 1) + "…" : text;
 }
 
-/** Three animated dots (typing indicator) */
 const TypingDots = () => {
   const dotAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    Animated.loop(
+    const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(dotAnim, {
-          toValue: 1,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.timing(dotAnim, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }),
+        Animated.timing(dotAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
+        Animated.timing(dotAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
       ])
-    ).start();
+    );
+    loop.start();
+    return () => loop.stop();
   }, []);
   return (
     <View style={{ flexDirection: "row" }}>
@@ -489,10 +699,7 @@ const TypingDots = () => {
             fontSize: 18,
             fontWeight: "bold",
             marginHorizontal: 2,
-            opacity: dotAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0.3, 1],
-            }),
+            opacity: dotAnim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }),
           }}
         >
           ●
@@ -502,14 +709,125 @@ const TypingDots = () => {
   );
 };
 
-// ——— Styles ——————————————————————————————
+// Styles (reuse your existing styles but ensure the new style keys are present)
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#e5ddd5", // WhatsApp‐style chat background
+    backgroundColor: "#e5ddd5",
+  },
+  containerRow: {
+    flex: 1,
+    flexDirection: "row",
   },
   container: {
     flex: 1,
+  },
+  // Wide sidebar expanded/collapsed
+  sidebarWide: {
+    width: 300,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    backgroundColor: "#fff",
+  },
+  sidebarCollapsed: {
+    width: 50,
+    backgroundColor: "#fff",
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
+  collapseToggle: {
+    padding: 8,
+  },
+  collapseToggleText: {
+    fontSize: 20,
+    color: "#2e86de",
+  },
+  sidebarHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+  },
+  sidebarHeaderTitle: {
+    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#333",
+  },
+  chatArea: {
+    flex: 1,
+    position: "relative",
+  },
+  // Overlay sidebar on mobile
+  sidebarOverlay: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: "#fff",
+    zIndex: 10,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    shadowColor: "#000",
+    shadowOffset: { width: -2, height: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 5,
+    elevation: 10,
+  },
+  backdrop: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "rgba(0,0,0,0.4)",
+    zIndex: 5,
+  },
+  sidebarContent: {
+    padding: 16,
+    paddingTop: 20,
+  },
+  newChatButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: "#128C7E",
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  newChatText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  sidebarTitle: {
+    fontSize: 20,
+    fontWeight: "600",
+    marginBottom: 20,
+    color: "#128C7E",
+    textAlign: "center",
+  },
+  historyItemContainer: {
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: "#eee",
+  },
+  historyItemActive: {
+    backgroundColor: "#e0f7fa", // highlight active session
+  },
+  historyItemText: {
+    fontSize: 14,
+    color: "#333",
+    marginBottom: 4,
+  },
+  historyTime: {
+    fontSize: 12,
+    color: "#888",
   },
   chatBackground: {
     flex: 1,
@@ -525,6 +843,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     maxWidth: "85%",
     flexDirection: "column",
+    flexShrink: 1,
   },
   aiBubble: {
     backgroundColor: "#ffffff",
@@ -547,6 +866,7 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 16,
     lineHeight: 22,
+    flexWrap: "wrap",
   },
   timestampText: {
     fontSize: 10,
@@ -554,10 +874,8 @@ const styles = StyleSheet.create({
     marginTop: 4,
     alignSelf: "flex-end",
   },
-  // ========== Bottom input section ==========
   inputSection: {
     backgroundColor: "#f0f0f0",
-    // Add bottom padding to ensure we sit above nav buttons.
     paddingBottom: Platform.OS === "android" ? 20 : 0,
   },
   inputContainer: {
@@ -612,7 +930,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: "#fff",
   },
-  // ========== Disclaimer ==========
   disclaimer: {
     paddingVertical: 6,
     paddingHorizontal: 12,
@@ -624,70 +941,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#888",
     textAlign: "center",
-  },
-  // ========== Sidebar ==========
-  backdrop: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
-    backgroundColor: "rgba(0,0,0,0.4)",
-    zIndex: 5,
-  },
-  sidebar: {
-    position: "absolute",
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: SIDEBAR_WIDTH,
-    backgroundColor: "#fff",
-    zIndex: 10,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderColor: "#ddd",
-    shadowColor: "#000",
-    shadowOffset: { width: -2, height: 0 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 10,
-  },
-  sidebarContent: {
-    padding: 16,
-    paddingTop: 20,
-  },
-  sidebarTitle: {
-    fontSize: 20,
-    fontWeight: "600",
-    marginBottom: 20,
-    color: "#128C7E",
-    textAlign: "center",
-  },
-  groupBlock: {
-    marginBottom: 24,
-  },
-  groupHeader: {
-    fontSize: 16,
-    fontWeight: "600",
-    marginBottom: 8,
-    color: "#333",
-    backgroundColor: "#f0f0f0",
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 4,
-  },
-  historyItemContainer: {
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderColor: "#eee",
-  },
-  historyItemText: {
-    fontSize: 14,
-    color: "#333",
-    marginBottom: 4,
-  },
-  historyTime: {
-    fontSize: 12,
-    color: "#888",
   },
 });

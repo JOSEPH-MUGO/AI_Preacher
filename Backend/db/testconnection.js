@@ -11,7 +11,7 @@ async function createUser() {
   } catch (err) {
     console.error('Error inserting user:', err.message);
   } finally {
-    pool.end(); // always close the connection pool
+    pool.end(); 
   }
 }
 

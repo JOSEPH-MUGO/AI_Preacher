@@ -29,7 +29,7 @@ async function getGeminiReply(systemPrompt, userPrompt) {
     const response = await axios.post(url, body, {
       headers: { 'Content-Type': 'application/json' },
       timeout: 10000,
-      family: 4 // optional, to avoid IPv6 issues
+      family: 4 
     });
 
     const text = response?.data?.candidates?.[0]?.content?.parts?.[0]?.text;

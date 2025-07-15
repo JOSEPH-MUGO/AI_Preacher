@@ -78,12 +78,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-/**
- * POST /api/users/login
- * Log in a user by email.
- * If found, return { id, name, email, mood, denomination_id }.
- * If not found, return 404.
- */
+
 router.post('/login', async (req, res) => {
   const { email } = req.body;
 
@@ -104,11 +99,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-/**
- * PUT /api/users/:id/mood
- * Update the mood for user with given id.
- * Request body: { mood: 'new mood' }
- */
+
 router.put('/:id/mood', async (req, res) => {
   const { id } = req.params;
   const { mood } = req.body;
@@ -131,11 +122,7 @@ router.put('/:id/mood', async (req, res) => {
   }
 });
 
-/**
- * PUT /api/users/:id/denomination
- * Update the denomination_id for user with given id.
- * Request body: { denomination_id: 3 }
- */
+
 router.put('/:id/denomination', async (req, res) => {
   const { id } = req.params;
   const { denomination_id } = req.body;
